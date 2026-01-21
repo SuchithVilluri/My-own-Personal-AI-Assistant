@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pinecone
+sentence-transformers
+requests
+vosk
+sounddevice
+pyttsx3

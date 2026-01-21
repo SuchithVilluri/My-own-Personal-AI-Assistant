@@ -1,0 +1,125 @@
+import streamlit as st
+import requests
+import tempfile
+import os
+import wave
+import json
+import pyttsx3
+from vosk import Model, KaldiRecognizer
+
+# ---------------- Page config ----------------
+st.set_page_config(page_title="Jarvis UI", page_icon="🤖")
+
+st.title("🤖 Jarvis – Personal AI Assistant")
+st.caption("Text + Voice interface (RAG + Ollama + Pinecone backend)")
+
+# ---------------- Backend ----------------
+BACKEND_URL = "http://localhost:8000/chat"
+
+# ---------------- Session state ----------------
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+# ---------------- Vosk STT ----------------
+@st.cache_resource
+def load_vosk_model():
+    return Model("vosk-model")  # same folder you already use
+
+vosk_model = load_vosk_model()
+
+
+def transcribe_audio(audio_bytes):
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
+        f.write(audio_bytes)
+        wav_path = f.name
+
+    wf = wave.open(wav_path, "rb")
+    rec = KaldiRecognizer(vosk_model, wf.getframerate())
+
+    text = ""
+    while True:
+        data = wf.readframes(4000)
+        if len(data) == 0:
+            break
+        if rec.AcceptWaveform(data):
+            result = json.loads(rec.Result())
+            text += " " + result.get("text", "")
+
+    final = json.loads(rec.FinalResult()).get("text", "")
+    text += " " + final
+
+    wf.close()
+    os.remove(wav_path)
+
+    return text.strip()
+
+# ---------------- TTS ----------------
+engine = pyttsx3.init('sapi5')
+engine.setProperty('rate', 170)
+engine.setProperty('volume', 1.0)
+
+
+def tts_to_audio(text):
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+    path = tmp.name
+    tmp.close()
+
+    engine.save_to_file(text, path)
+    engine.runAndWait()
+
+    return path
+
+# ---------------- UI ----------------
+st.subheader("Text Input")
+user_input = st.text_input("You (Sir):", placeholder="Ask something...")
+
+col1, col2 = st.columns(2)
+
+send_text = col1.button("Send Text")
+
+st.subheader("Voice Input")
+audio_file = st.audio_input("Speak to Jarvis")
+
+send_voice = col2.button("Send Voice")
+
+# ---------------- Handle text ----------------
+if send_text and user_input.strip():
+    try:
+        res = requests.post(BACKEND_URL, json={"question": user_input}, timeout=60)
+        answer = res.json().get("answer", "No response")
+    except Exception as e:
+        answer = f"Backend error: {e}"
+
+    st.session_state.chat_history.append((user_input, answer))
+
+    audio_path = tts_to_audio(answer)
+    st.audio(audio_path, format="audio/wav")
+
+# ---------------- Handle voice ----------------
+if send_voice and audio_file is not None:
+    audio_bytes = audio_file.read()
+
+    with st.spinner("Transcribing..."):
+        user_text = transcribe_audio(audio_bytes)
+
+    if user_text:
+        try:
+            res = requests.post(BACKEND_URL, json={"question": user_text}, timeout=60)
+            answer = res.json().get("answer", "No response")
+        except Exception as e:
+            answer = f"Backend error: {e}"
+
+        st.session_state.chat_history.append((user_text, answer))
+
+        audio_path = tts_to_audio(answer)
+        st.audio(audio_path, format="audio/wav")
+
+# ---------------- Chat history ----------------
+st.divider()
+
+for user_msg, bot_msg in st.session_state.chat_history[::-1]:
+    st.markdown(f"**🧑 Sir:** {user_msg}")
+    st.markdown(f"**🤖 Jarvis:** {bot_msg}")
+    st.markdown("---")
+
+st.caption("Backend must be running on http://localhost:8000")
